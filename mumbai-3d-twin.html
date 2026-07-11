@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Mumbai 3D — Live Twin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230b0e14'/><path d='M20 78 L20 48 L34 48 L34 78 M42 78 L42 30 L58 30 L58 78 M66 78 L66 56 L80 56 L80 78' stroke='%23ffb54a' stroke-width='6' fill='none'/></svg>" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css" />
+<style>
+  :root {
+    --panel: rgba(13,16,22,.93); --line: #262b35; --txt: #e8e6df; --dim: #8a8f9a;
+    --amber: #ffb54a; --teal: #3ddbc4; --red: #ff5544;
+    --mono: ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; background: #0b0e14; font-family: var(--mono); }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; z-index: 10; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; color: var(--txt); backdrop-filter: blur(8px); box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+
+  /* search */
+  .search { top: 10px; left: 10px; right: 10px; max-width: 420px; padding: 0; overflow: hidden; }
+  .search input { width: 100%; background: transparent; border: 0; outline: 0; color: var(--txt);
+    font-family: var(--mono); font-size: 14px; padding: 12px 14px; }
+  .search input::placeholder { color: var(--dim); }
+  .results { border-top: 1px solid var(--line); max-height: 40vh; overflow-y: auto; display: none; }
+  .results div { padding: 10px 14px; font-size: 12px; border-bottom: 1px solid #1a1f28; cursor: pointer; }
+  .results div:active { background: #1a212c; }
+
+  /* HUD */
+  .hud { top: 62px; left: 10px; max-width: 300px; padding: 10px 12px; }
+  .eyebrow { font-size: 10px; letter-spacing: .22em; color: var(--dim); }
+  .title { font-size: 16px; font-weight: 700; margin: 2px 0 6px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 10px; letter-spacing: .12em; padding: 2px 8px; border-radius: 5px; border: 1px solid; }
+  .badge.live { color: var(--teal); border-color: var(--teal); }
+  .badge.demo { color: var(--amber); border-color: var(--amber); }
+  .wx { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+  .wx .t { font-size: 24px; font-weight: 700; }
+  .wx .d { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .foot { margin-top: 8px; font-size: 9.5px; color: var(--dim); line-height: 1.5; }
+
+  /* controls */
+  .ctls { bottom: 10px; left: 10px; right: 10px; padding: 7px; display: flex; gap: 6px;
+    overflow-x: auto; scrollbar-width: none; }
+  .ctls::-webkit-scrollbar { display: none; }
+  .ctl { flex: 0 0 auto; font-family: var(--mono); font-size: 12.5px; color: var(--txt);
+    background: #171b23; border: 1px solid var(--line); border-radius: 7px; padding: 8px 12px; }
+  .ctl.on { background: var(--amber); border-color: var(--amber); color: #17130a; font-weight: 700; }
+  .banner { bottom: 64px; left: 10px; right: 10px; padding: 9px 12px; color: var(--amber);
+    font-size: 12px; text-align: center; display: none; }
+  .maplibregl-ctrl-attrib { background: rgba(11,14,20,.7) !important; color: #666 !important; font-size: 9px !important; }
+  .maplibregl-ctrl-attrib a { color: #888 !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel search">
+  <input id="q" type="search" placeholder="search a place… (Dadar, Vashi, Gateway of India)" autocomplete="off" />
+  <div class="results" id="results"></div>
+</div>
+
+<div class="panel hud">
+  <div class="row">
+    <div style="min-width:0">
+      <div class="eyebrow">3D LIVE TWIN</div>
+      <div class="title">Mumbai · Navi Mumbai</div>
+    </div>
+    <span id="badge" class="badge demo" style="margin-left:auto">DEMO</span>
+  </div>
+  <div class="wx"><span class="t" id="wxt">—°</span><div class="d" id="wxd">fetching weather…</div></div>
+  <div class="foot">vehicles simulated on real OSM roads · their speed &amp; color follow live traffic · tap a dot's road color: green = flowing, red = jammed</div>
+</div>
+
+<div class="panel banner" id="banner">Showing demo speeds — TomTom key missing or blocked, everything else is live</div>
+
+<div class="panel ctls">
+  <button class="ctl" id="dayBtn">☀ Day</button>
+  <button class="ctl" id="tiltBtn">3D</button>
+  <button class="ctl" id="me">◉ me</button>
+  <button class="ctl" data-v="18.922,72.833,15">Gateway</button>
+  <button class="ctl" data-v="19.038,72.818,14">Sea Link</button>
+  <button class="ctl" data-v="19.098,72.874,13.5">Airport</button>
+  <button class="ctl" data-v="19.064,72.996,14">Vashi</button>
+  <button class="ctl" data-v="19.018,73.038,14">Belapur</button>
+  <button class="ctl" data-v="18.99,73.11,13">Panvel</button>
+  <button class="ctl" data-v="19.16,72.99,13">Airoli</button>
+  <button class="ctl" data-v="19.045,72.94,10.6">⤢ all</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script>
+// ═══════════════ ONLY KEY YOU NEED (TomTom, already inserted) ═══════════════
+const TOMTOM_KEY = 'y0fgG8VaoMBZcps1gvGMHKquYZ0tBzOx';
+// Everything else (3D map, roads, weather, search) is free and keyless.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const KEY = (new URLSearchParams(location.search).get('key') || TOMTOM_KEY || '').trim();
+const HAS_KEY = KEY.length > 10;
+const CENTER = [72.94, 19.045];
+const NIGHT_START = 18.75, NIGHT_END = 6.25; // IST hours
+
+let night = (() => { const h = new Date().getHours() + new Date().getMinutes() / 60; return h >= NIGHT_START || h < NIGHT_END; })();
+let tilt = true;
+
+// ── Map with dual day/night bases + TomTom flow overlays baked into one style ─
+const sub = ['a', 'b', 'c', 'd'];
+const style = {
+  version: 8,
+  sources: {
+    day:   { type: 'raster', tiles: sub.map(s => `https://${s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png`), tileSize: 256, attribution: '© OpenStreetMap © CARTO · traffic © TomTom · weather © Open-Meteo' },
+    nightS:{ type: 'raster', tiles: sub.map(s => `https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png`), tileSize: 256 },
+    flowD: { type: 'raster', tiles: [`https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=${KEY}`], tileSize: 256 },
+    flowN: { type: 'raster', tiles: [`https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key=${KEY}`], tileSize: 256 },
+    ofm:   { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
+    veh:   { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    pin:   { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+  },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0b0e14' } },
+    { id: 'day', type: 'raster', source: 'day', layout: { visibility: night ? 'none' : 'visible' } },
+    { id: 'nightS', type: 'raster', source: 'nightS', layout: { visibility: night ? 'visible' : 'none' } },
+    ...(HAS_KEY ? [
+      { id: 'flowD', type: 'raster', source: 'flowD', paint: { 'raster-opacity': 0.75 }, layout: { visibility: night ? 'none' : 'visible' } },
+      { id: 'flowN', type: 'raster', source: 'flowN', paint: { 'raster-opacity': 0.8 }, layout: { visibility: night ? 'visible' : 'none' } },
+    ] : []),
+    { id: 'bld', type: 'fill-extrusion', source: 'ofm', 'source-layer': 'building', minzoom: 13.5,
+      paint: {
+        'fill-extrusion-color': night ? '#1c2230' : '#d9d3c7',
+        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 12],
+        'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+        'fill-extrusion-opacity': 0.85,
+      } },
+    { id: 'vehGlow', type: 'circle', source: 'veh',
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4, 16, 12], 'circle-color': '#ffc36a',
+        'circle-blur': 1, 'circle-opacity': night ? 0.5 : 0 } },
+    { id: 'vehDot', type: 'circle', source: 'veh',
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.6, 12, 2.6, 16, 5.5],
+        'circle-color': ['get', 'c'], 'circle-stroke-width': 0.5, 'circle-stroke-color': 'rgba(0,0,0,.4)' } },
+    { id: 'pinL', type: 'circle', source: 'pin',
+      paint: { 'circle-radius': 9, 'circle-color': '#3ddbc4', 'circle-opacity': 0.35, 'circle-stroke-width': 2, 'circle-stroke-color': '#3ddbc4' } },
+  ],
+};
+
+const map = new maplibregl.Map({
+  container: 'map', style, center: CENTER, zoom: 11.6, pitch: 55, bearing: -12,
+  maxPitch: 72, attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+map.on('error', () => {}); // a failed optional source must never break the twin
+
+// ── Live congestion sample points (famous corridors) ─────────────────────────
+const SAMPLES = [
+  { n: 'Sea Link', p: [19.038, 72.817] }, { n: 'WEH Andheri', p: [19.119, 72.855] },
+  { n: 'EEH Chembur', p: [19.062, 72.898] }, { n: 'Eastern Fwy', p: [18.987, 72.855] },
+  { n: 'Vashi Bridge', p: [19.063, 72.996] }, { n: 'Palm Beach', p: [19.030, 73.020] },
+  { n: 'Thane-Belapur', p: [19.155, 72.999] }, { n: 'Ghodbunder', p: [19.218, 72.978] },
+  { n: 'Marine Dr', p: [18.944, 72.823] }, { n: 'Sion-Panvel', p: [19.03, 73.06] },
+];
+SAMPLES.forEach((s) => (s.ratio = 0.8));
+let anyLive = false;
+
+async function refreshFlow() {
+  if (!HAS_KEY) { demoFlow(); return }
+  let ok = 0;
+  await Promise.all(SAMPLES.map(async (s) => {
+    try {
+      const r = await fetch(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${KEY}&point=${s.p[0]},${s.p[1]}`);
+      if (!r.ok) throw 0;
+      const seg = (await r.json()).flowSegmentData;
+      const cur = +seg?.currentSpeed, ff = +seg?.freeFlowSpeed;
+      if (ff > 0 && Number.isFinite(cur)) { s.ratio = Math.max(0.15, Math.min(1, cur / ff)); ok++ }
+    } catch (_) {}
+  }));
+  anyLive = ok > 0;
+  setBadge();
+}
+function demoFlow() {
+  const t = Date.now() / 1000;
+  SAMPLES.forEach((s, i) => (s.ratio = Math.max(0.2, Math.min(0.97, 0.62 + 0.28 * Math.sin(t / 500 + i * 1.7)))));
+  anyLive = false; setBadge();
+}
+function setBadge() {
+  const b = document.getElementById('badge');
+  b.textContent = anyLive ? 'LIVE' : 'DEMO';
+  b.className = 'badge ' + (anyLive ? 'live' : 'demo');
+  document.getElementById('banner').style.display = anyLive ? 'none' : 'block';
+}
+refreshFlow(); setInterval(refreshFlow, HAS_KEY ? 90_000 : 10_000);
+
+// ── Real road network from OpenStreetMap (Overpass), with offline fallback ───
+const FALLBACK = [ // rough major corridors if Overpass is unreachable
+  [[72.815,19.008],[72.819,19.045]], [[72.823,18.930],[72.822,18.955],[72.828,18.975]],
+  [[72.842,18.995],[72.850,19.06],[72.856,19.12],[72.86,19.18],[72.868,19.23]],
+  [[72.86,19.00],[72.89,19.05],[72.905,19.09],[72.93,19.15],[72.955,19.19]],
+  [[72.845,18.94],[72.855,18.99],[72.868,19.03]],
+  [[72.87,19.04],[72.93,19.03],[72.98,19.05],[73.00,19.065],[73.06,19.03],[73.11,18.99]],
+  [[72.99,19.06],[73.01,19.03],[73.03,18.99]], [[72.99,19.16],[73.02,19.10],[73.04,19.02]],
+  [[72.955,19.15],[73.00,19.16]], [[72.976,19.20],[72.94,19.24]],
+];
+const paths = []; // { pts:[[lng,lat]...], segLen:[m], L, sampleIdx }
+const R_LAT = 110_540, R_LON = 111_320;
+function buildPath(coords) {
+  if (coords.length < 2) return;
+  const segLen = []; let L = 0;
+  const cosLat = Math.cos((coords[0][1] * Math.PI) / 180);
+  for (let i = 1; i < coords.length; i++) {
+    const dx = (coords[i][0] - coords[i - 1][0]) * R_LON * cosLat;
+    const dy = (coords[i][1] - coords[i - 1][1]) * R_LAT;
+    const d = Math.hypot(dx, dy); segLen.push(d); L += d;
+  }
+  if (L < 250) return;
+  const mid = coords[Math.floor(coords.length / 2)];
+  let best = 0, bd = 1e18;
+  SAMPLES.forEach((s, i) => {
+    const d = Math.hypot((s.p[1] - mid[0]) * R_LON * cosLat, (s.p[0] - mid[1]) * R_LAT);
+    if (d < bd) { bd = d; best = i }
+  });
+  paths.push({ pts: coords, segLen, L, sampleIdx: best });
+}
+async function loadRoads() {
+  try {
+    const q = '[out:json][timeout:25];way["highway"~"^(motorway|trunk)$"](18.85,72.74,19.32,73.22);out geom;';
+    const ctrl = new AbortController(); setTimeout(() => ctrl.abort(), 15_000);
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: q, signal: ctrl.signal });
+    if (!r.ok) throw 0;
+    const json = await r.json();
+    (json.elements || []).forEach((w) => w.geometry && buildPath(w.geometry.map((g) => [g.lon, g.lat])));
+    if (!paths.length) throw 0;
+  } catch (_) {
+    FALLBACK.forEach(buildPath);
+  }
+  spawnVehicles();
+}
+
+// ── The fleet ────────────────────────────────────────────────────────────────
+const vehicles = [];
+function spawnVehicles() {
+  const SPACING = 380, CAP = 800;
+  for (const p of paths) {
+    const n = Math.max(1, Math.floor(p.L / SPACING));
+    for (let i = 0; i < n && vehicles.length < CAP; i++) {
+      vehicles.push({ p, s: (i + Math.random()) * (p.L / n), dir: Math.random() < 0.5 ? 1 : -1,
+        base: 38 + Math.random() * 34 });
+    }
+  }
+}
+function pointAt(p, s) {
+  let acc = 0;
+  for (let i = 0; i < p.segLen.length; i++) {
+    if (acc + p.segLen[i] >= s) {
+      const t = (s - acc) / p.segLen[i];
+      const a = p.pts[i], b = p.pts[i + 1];
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    acc += p.segLen[i];
+  }
+  return p.pts[p.pts.length - 1];
+}
+const colFor = (r) => (r > 0.75 ? '#39d98a' : r > 0.5 ? '#ffd24a' : r > 0.32 ? '#ff8a3d' : '#ff4d3a');
+let last = performance.now();
+setInterval(() => {
+  const now = performance.now();
+  const dt = Math.min((now - last) / 1000, 0.3); last = now;
+  if (!vehicles.length) return;
+  const feats = new Array(vehicles.length);
+  for (let i = 0; i < vehicles.length; i++) {
+    const v = vehicles[i];
+    const ratio = SAMPLES[v.p.sampleIdx].ratio;
+    v.s += ((v.base * ratio) / 3.6) * dt * v.dir;
+    if (v.s > v.p.L) v.s -= v.p.L; else if (v.s < 0) v.s += v.p.L;
+    feats[i] = { type: 'Feature', geometry: { type: 'Point', coordinates: pointAt(v.p, v.s) },
+      properties: { c: colFor(ratio) } };
+  }
+  const src = map.getSource('veh');
+  if (src) src.setData({ type: 'FeatureCollection', features: feats });
+}, 90);
+map.on('load', loadRoads);
+
+// ── Day / Night ──────────────────────────────────────────────────────────────
+function applyMode() {
+  const v = (id, show) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
+  v('day', !night); v('nightS', night); v('flowD', !night && HAS_KEY); v('flowN', night && HAS_KEY);
+  if (map.getLayer('bld')) map.setPaintProperty('bld', 'fill-extrusion-color', night ? '#1c2230' : '#d9d3c7');
+  if (map.getLayer('vehGlow')) map.setPaintProperty('vehGlow', 'circle-opacity', night ? 0.5 : 0);
+  document.getElementById('dayBtn').textContent = night ? '🌙 Night' : '☀ Day';
+  document.getElementById('dayBtn').classList.toggle('on', night);
+}
+document.getElementById('dayBtn').onclick = () => { night = !night; applyMode(); };
+map.on('load', applyMode);
+
+// ── 3D tilt toggle ───────────────────────────────────────────────────────────
+document.getElementById('tiltBtn').classList.add('on');
+document.getElementById('tiltBtn').onclick = function () {
+  tilt = !tilt; this.classList.toggle('on', tilt);
+  map.easeTo({ pitch: tilt ? 55 : 0, bearing: tilt ? -12 : 0, duration: 700 });
+};
+
+// ── Weather (Open-Meteo — free, no key) ─────────────────────────────────────
+const WX = { 0:'clear sky',1:'mostly clear',2:'partly cloudy',3:'overcast',45:'fog',48:'fog',
+  51:'drizzle',53:'drizzle',55:'drizzle',61:'light rain',63:'rain',65:'heavy rain',
+  80:'showers',81:'showers',82:'heavy showers',95:'thunderstorm',96:'thunderstorm',99:'hailstorm' };
+async function weather() {
+  try {
+    const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=19.05&longitude=72.95&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=Asia%2FKolkata');
+    const c = (await r.json()).current;
+    const code = c.weather_code;
+    const icon = code === 0 ? (night ? '🌙' : '☀️') : code <= 3 ? '⛅' : code <= 48 ? '🌫️' : code <= 67 ? '🌧️' : code <= 82 ? '🌧️' : '⛈️';
+    document.getElementById('wxt').textContent = `${icon} ${Math.round(c.temperature_2m)}°C`;
+    document.getElementById('wxd').innerHTML = `${WX[code] || 'weather'}<br>humidity ${c.relative_humidity_2m}% · wind ${Math.round(c.wind_speed_10m)} km/h`;
+  } catch (_) { document.getElementById('wxd').textContent = 'weather unavailable'; }
+}
+weather(); setInterval(weather, 600_000);
+
+// ── Search by name (Nominatim — free, no key) ───────────────────────────────
+const q = document.getElementById('q'), results = document.getElementById('results');
+let debounce;
+q.oninput = () => {
+  clearTimeout(debounce);
+  const text = q.value.trim();
+  if (text.length < 3) { results.style.display = 'none'; return }
+  debounce = setTimeout(async () => {
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=6&viewbox=72.6,19.5,73.4,18.7&bounded=0&accept-language=en`);
+      const list = await r.json();
+      results.innerHTML = '';
+      list.forEach((it) => {
+        const d = document.createElement('div');
+        d.textContent = it.display_name;
+        d.onclick = () => {
+          results.style.display = 'none'; q.blur();
+          const ll = [+it.lon, +it.lat];
+          map.getSource('pin').setData({ type: 'Feature', geometry: { type: 'Point', coordinates: ll } });
+          map.flyTo({ center: ll, zoom: 15.2, pitch: tilt ? 58 : 0, duration: 1400 });
+        };
+        results.appendChild(d);
+      });
+      results.style.display = list.length ? 'block' : 'none';
+    } catch (_) {}
+  }, 550);
+};
+
+// ── Chips + locate ───────────────────────────────────────────────────────────
+document.querySelectorAll('.ctl[data-v]').forEach((b) => {
+  b.onclick = () => { const [la, lo, z] = b.dataset.v.split(',').map(Number);
+    map.flyTo({ center: [lo, la], zoom: z, duration: 1200 }); };
+});
+document.getElementById('me').onclick = () => {
+  navigator.geolocation?.getCurrentPosition((p) => {
+    const ll = [p.coords.longitude, p.coords.latitude];
+    map.getSource('pin').setData({ type: 'Feature', geometry: { type: 'Point', coordinates: ll } });
+    map.flyTo({ center: ll, zoom: 15, duration: 1200 });
+  }, () => {}, { enableHighAccuracy: true, timeout: 8000 });
+};
+</script>
+</body>
+</html>
