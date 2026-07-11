@@ -18,7 +18,6 @@
   .panel { position: absolute; z-index: 10; background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; color: var(--txt); backdrop-filter: blur(8px); box-shadow: 0 8px 28px rgba(0,0,0,.5); }
 
-  /* search */
   .search { top: 10px; left: 10px; right: 10px; max-width: 420px; padding: 0; overflow: hidden; }
   .search input { width: 100%; background: transparent; border: 0; outline: 0; color: var(--txt);
     font-family: var(--mono); font-size: 14px; padding: 12px 14px; }
@@ -27,7 +26,6 @@
   .results div { padding: 10px 14px; font-size: 12px; border-bottom: 1px solid #1a1f28; cursor: pointer; }
   .results div:active { background: #1a212c; }
 
-  /* HUD */
   .hud { top: 62px; left: 10px; max-width: 300px; padding: 10px 12px; }
   .eyebrow { font-size: 10px; letter-spacing: .22em; color: var(--dim); }
   .title { font-size: 16px; font-weight: 700; margin: 2px 0 6px; }
@@ -40,7 +38,6 @@
   .wx .d { font-size: 11px; color: var(--dim); line-height: 1.5; }
   .foot { margin-top: 8px; font-size: 9.5px; color: var(--dim); line-height: 1.5; }
 
-  /* controls */
   .ctls { bottom: 10px; left: 10px; right: 10px; padding: 7px; display: flex; gap: 6px;
     overflow-x: auto; scrollbar-width: none; }
   .ctls::-webkit-scrollbar { display: none; }
@@ -70,7 +67,7 @@
     <span id="badge" class="badge demo" style="margin-left:auto">DEMO</span>
   </div>
   <div class="wx"><span class="t" id="wxt">—°</span><div class="d" id="wxd">fetching weather…</div></div>
-  <div class="foot">vehicles simulated on real OSM roads · their speed &amp; color follow live traffic · tap a dot's road color: green = flowing, red = jammed</div>
+  <div class="foot">zoom in near any highway — dots become 3D cars, autos &amp; buses · speeds follow live traffic · road colors: green = flowing, red = jammed</div>
 </div>
 
 <div class="panel banner" id="banner">Showing demo speeds — TomTom key missing or blocked, everything else is live</div>
@@ -80,12 +77,12 @@
   <button class="ctl" id="tiltBtn">3D</button>
   <button class="ctl" id="me">◉ me</button>
   <button class="ctl" data-v="18.922,72.833,15">Gateway</button>
-  <button class="ctl" data-v="19.038,72.818,14">Sea Link</button>
-  <button class="ctl" data-v="19.098,72.874,13.5">Airport</button>
-  <button class="ctl" data-v="19.064,72.996,14">Vashi</button>
-  <button class="ctl" data-v="19.018,73.038,14">Belapur</button>
-  <button class="ctl" data-v="18.99,73.11,13">Panvel</button>
-  <button class="ctl" data-v="19.16,72.99,13">Airoli</button>
+  <button class="ctl" data-v="19.038,72.818,15.5">Sea Link</button>
+  <button class="ctl" data-v="19.098,72.874,14.5">Airport</button>
+  <button class="ctl" data-v="19.064,72.996,15">Vashi</button>
+  <button class="ctl" data-v="19.018,73.038,14.5">Belapur</button>
+  <button class="ctl" data-v="18.99,73.11,13.5">Panvel</button>
+  <button class="ctl" data-v="19.16,72.99,14">Airoli</button>
   <button class="ctl" data-v="19.045,72.94,10.6">⤢ all</button>
 </div>
 
@@ -93,18 +90,19 @@
 <script>
 // ═══════════════ ONLY KEY YOU NEED (TomTom, already inserted) ═══════════════
 const TOMTOM_KEY = 'y0fgG8VaoMBZcps1gvGMHKquYZ0tBzOx';
-// Everything else (3D map, roads, weather, search) is free and keyless.
+// 3D map, roads, weather, search are all free & keyless.
 // ═════════════════════════════════════════════════════════════════════════════
 
 const KEY = (new URLSearchParams(location.search).get('key') || TOMTOM_KEY || '').trim();
 const HAS_KEY = KEY.length > 10;
 const CENTER = [72.94, 19.045];
-const NIGHT_START = 18.75, NIGHT_END = 6.25; // IST hours
+const SWAP_ZOOM = 13.6; // dots below, 3D vehicle bodies above this zoom
+const COS_LAT = Math.cos((19.05 * Math.PI) / 180);
+const M_LON = 1 / (111320 * COS_LAT), M_LAT = 1 / 110540; // metres → degrees
 
-let night = (() => { const h = new Date().getHours() + new Date().getMinutes() / 60; return h >= NIGHT_START || h < NIGHT_END; })();
+let night = (() => { const h = new Date().getHours() + new Date().getMinutes() / 60; return h >= 18.75 || h < 6.25; })();
 let tilt = true;
 
-// ── Map with dual day/night bases + TomTom flow overlays baked into one style ─
 const sub = ['a', 'b', 'c', 'd'];
 const style = {
   version: 8,
@@ -115,6 +113,7 @@ const style = {
     flowN: { type: 'raster', tiles: [`https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key=${KEY}`], tileSize: 256 },
     ofm:   { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
     veh:   { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    veh3d: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     pin:   { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
   },
   layers: [
@@ -132,12 +131,19 @@ const style = {
         'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
         'fill-extrusion-opacity': 0.85,
       } },
-    { id: 'vehGlow', type: 'circle', source: 'veh',
-      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4, 16, 12], 'circle-color': '#ffc36a',
+    { id: 'vehGlow', type: 'circle', source: 'veh', maxzoom: SWAP_ZOOM,
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4, 13.5, 9], 'circle-color': '#ffc36a',
         'circle-blur': 1, 'circle-opacity': night ? 0.5 : 0 } },
-    { id: 'vehDot', type: 'circle', source: 'veh',
-      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.6, 12, 2.6, 16, 5.5],
+    { id: 'vehDot', type: 'circle', source: 'veh', maxzoom: SWAP_ZOOM,
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.6, 12, 2.6, 13.5, 4],
         'circle-color': ['get', 'c'], 'circle-stroke-width': 0.5, 'circle-stroke-color': 'rgba(0,0,0,.4)' } },
+    { id: 'veh3d', type: 'fill-extrusion', source: 'veh3d', minzoom: SWAP_ZOOM,
+      paint: {
+        'fill-extrusion-color': ['get', 'c'],
+        'fill-extrusion-height': ['get', 'h'],
+        'fill-extrusion-base': ['get', 'b'],
+        'fill-extrusion-opacity': 0.98,
+      } },
     { id: 'pinL', type: 'circle', source: 'pin',
       paint: { 'circle-radius': 9, 'circle-color': '#3ddbc4', 'circle-opacity': 0.35, 'circle-stroke-width': 2, 'circle-stroke-color': '#3ddbc4' } },
   ],
@@ -148,9 +154,9 @@ const map = new maplibregl.Map({
   maxPitch: 72, attributionControl: { compact: true },
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-map.on('error', () => {}); // a failed optional source must never break the twin
+map.on('error', () => {}); // an optional source failing must never break the twin
 
-// ── Live congestion sample points (famous corridors) ─────────────────────────
+// ── Live congestion sample points ────────────────────────────────────────────
 const SAMPLES = [
   { n: 'Sea Link', p: [19.038, 72.817] }, { n: 'WEH Andheri', p: [19.119, 72.855] },
   { n: 'EEH Chembur', p: [19.062, 72.898] }, { n: 'Eastern Fwy', p: [18.987, 72.855] },
@@ -189,8 +195,8 @@ function setBadge() {
 }
 refreshFlow(); setInterval(refreshFlow, HAS_KEY ? 90_000 : 10_000);
 
-// ── Real road network from OpenStreetMap (Overpass), with offline fallback ───
-const FALLBACK = [ // rough major corridors if Overpass is unreachable
+// ── Real roads from OpenStreetMap (Overpass), with offline fallback ──────────
+const FALLBACK = [
   [[72.815,19.008],[72.819,19.045]], [[72.823,18.930],[72.822,18.955],[72.828,18.975]],
   [[72.842,18.995],[72.850,19.06],[72.856,19.12],[72.86,19.18],[72.868,19.23]],
   [[72.86,19.00],[72.89,19.05],[72.905,19.09],[72.93,19.15],[72.955,19.19]],
@@ -199,22 +205,20 @@ const FALLBACK = [ // rough major corridors if Overpass is unreachable
   [[72.99,19.06],[73.01,19.03],[73.03,18.99]], [[72.99,19.16],[73.02,19.10],[73.04,19.02]],
   [[72.955,19.15],[73.00,19.16]], [[72.976,19.20],[72.94,19.24]],
 ];
-const paths = []; // { pts:[[lng,lat]...], segLen:[m], L, sampleIdx }
-const R_LAT = 110_540, R_LON = 111_320;
+const paths = [];
 function buildPath(coords) {
   if (coords.length < 2) return;
   const segLen = []; let L = 0;
-  const cosLat = Math.cos((coords[0][1] * Math.PI) / 180);
   for (let i = 1; i < coords.length; i++) {
-    const dx = (coords[i][0] - coords[i - 1][0]) * R_LON * cosLat;
-    const dy = (coords[i][1] - coords[i - 1][1]) * R_LAT;
+    const dx = (coords[i][0] - coords[i - 1][0]) / M_LON;
+    const dy = (coords[i][1] - coords[i - 1][1]) / M_LAT;
     const d = Math.hypot(dx, dy); segLen.push(d); L += d;
   }
   if (L < 250) return;
   const mid = coords[Math.floor(coords.length / 2)];
   let best = 0, bd = 1e18;
   SAMPLES.forEach((s, i) => {
-    const d = Math.hypot((s.p[1] - mid[0]) * R_LON * cosLat, (s.p[0] - mid[1]) * R_LAT);
+    const d = Math.hypot((s.p[1] - mid[0]) / M_LON, (s.p[0] - mid[1]) / M_LAT);
     if (d < bd) { bd = d; best = i }
   });
   paths.push({ pts: coords, segLen, L, sampleIdx: best });
@@ -234,15 +238,30 @@ async function loadRoads() {
   spawnVehicles();
 }
 
-// ── The fleet ────────────────────────────────────────────────────────────────
+// ── The fleet: cars, auto-rickshaws, DTC buses ───────────────────────────────
+const T_CAR = 0, T_AUTO = 1, T_BUS = 2;
+const PAL = [
+  ['#f2f2ef', '#d4d8dd', '#a3a9b1', '#8e2b2b', '#2b4a8e', '#41464f'], // cars
+  ['#f2c230', '#35a355', '#f2c230'],                                  // autos
+  ['#2f8f4a', '#c8471f'],                                             // DTC / cluster buses
+];
+// [halfLen, halfWidth, bodyH, cabinHalfLen, cabinTop] metres
+const DIM = [ [2.3, 0.95, 1.15, 1.2, 2.0], [1.45, 0.75, 1.75, 0, 0], [5.5, 1.25, 3.2, 0, 0] ];
 const vehicles = [];
 function spawnVehicles() {
   const SPACING = 380, CAP = 800;
   for (const p of paths) {
     const n = Math.max(1, Math.floor(p.L / SPACING));
     for (let i = 0; i < n && vehicles.length < CAP; i++) {
-      vehicles.push({ p, s: (i + Math.random()) * (p.L / n), dir: Math.random() < 0.5 ? 1 : -1,
-        base: 38 + Math.random() * 34 });
+      const r = Math.random();
+      const type = r < 0.68 ? T_CAR : r < 0.88 ? T_AUTO : T_BUS;
+      vehicles.push({
+        p, type, s: (i + Math.random()) * (p.L / n),
+        dir: Math.random() < 0.5 ? 1 : -1,
+        base: (type === T_BUS ? 32 : type === T_AUTO ? 34 : 40) + Math.random() * 26,
+        col: PAL[type][Math.floor(Math.random() * PAL[type].length)],
+        hd: 0, lx: 0, ly: 0,
+      });
     }
   }
 }
@@ -259,22 +278,58 @@ function pointAt(p, s) {
   return p.pts[p.pts.length - 1];
 }
 const colFor = (r) => (r > 0.75 ? '#39d98a' : r > 0.5 ? '#ffd24a' : r > 0.32 ? '#ff8a3d' : '#ff4d3a');
+
+// A rotated rectangle polygon (metres) around a lng/lat point.
+function rect(pos, hd, halfLen, halfW) {
+  const fx = Math.sin(hd), fy = Math.cos(hd);        // forward (east, north)
+  const rx = fy, ry = -fx;                            // right
+  const ring = [];
+  for (const [a, b] of [[1, 1], [1, -1], [-1, -1], [-1, 1], [1, 1]]) {
+    const ex = fx * halfLen * a + rx * halfW * b;
+    const ny = fy * halfLen * a + ry * halfW * b;
+    ring.push([pos[0] + ex * M_LON, pos[1] + ny * M_LAT]);
+  }
+  return ring;
+}
+
 let last = performance.now();
 setInterval(() => {
   const now = performance.now();
   const dt = Math.min((now - last) / 1000, 0.3); last = now;
   if (!vehicles.length) return;
-  const feats = new Array(vehicles.length);
+
+  const z = map.getZoom();
+  const show3d = z >= SWAP_ZOOM;
+  let bounds = null;
+  if (show3d) { const b = map.getBounds(); bounds = [b.getWest() - 0.004, b.getSouth() - 0.004, b.getEast() + 0.004, b.getNorth() + 0.004]; }
+
+  const dots = new Array(vehicles.length);
+  const boxes = [];
   for (let i = 0; i < vehicles.length; i++) {
     const v = vehicles[i];
     const ratio = SAMPLES[v.p.sampleIdx].ratio;
     v.s += ((v.base * ratio) / 3.6) * dt * v.dir;
     if (v.s > v.p.L) v.s -= v.p.L; else if (v.s < 0) v.s += v.p.L;
-    feats[i] = { type: 'Feature', geometry: { type: 'Point', coordinates: pointAt(v.p, v.s) },
-      properties: { c: colFor(ratio) } };
+    const pos = pointAt(v.p, v.s);
+    dots[i] = { type: 'Feature', geometry: { type: 'Point', coordinates: pos }, properties: { c: colFor(ratio) } };
+
+    if (show3d && boxes.length < 600 &&
+        pos[0] > bounds[0] && pos[0] < bounds[2] && pos[1] > bounds[1] && pos[1] < bounds[3]) {
+      // heading from movement
+      const dx = (pos[0] - v.lx) / M_LON, dy = (pos[1] - v.ly) / M_LAT;
+      if (Math.hypot(dx, dy) > 0.4) v.hd = Math.atan2(dx, dy);
+      const [hl, hw, bh, chl, ct] = DIM[v.type];
+      boxes.push({ type: 'Feature', properties: { c: v.col, h: bh, b: 0 },
+        geometry: { type: 'Polygon', coordinates: [rect(pos, v.hd, hl, hw)] } });
+      if (chl) boxes.push({ type: 'Feature', properties: { c: night ? '#ffd9a0' : '#23272f', h: ct, b: bh - 0.3 },
+        geometry: { type: 'Polygon', coordinates: [rect(pos, v.hd, chl, hw * 0.88)] } });
+    }
+    v.lx = pos[0]; v.ly = pos[1];
   }
   const src = map.getSource('veh');
-  if (src) src.setData({ type: 'FeatureCollection', features: feats });
+  if (src && !show3d) src.setData({ type: 'FeatureCollection', features: dots });
+  const src3 = map.getSource('veh3d');
+  if (src3) src3.setData({ type: 'FeatureCollection', features: show3d ? boxes : [] });
 }, 90);
 map.on('load', loadRoads);
 
@@ -290,7 +345,6 @@ function applyMode() {
 document.getElementById('dayBtn').onclick = () => { night = !night; applyMode(); };
 map.on('load', applyMode);
 
-// ── 3D tilt toggle ───────────────────────────────────────────────────────────
 document.getElementById('tiltBtn').classList.add('on');
 document.getElementById('tiltBtn').onclick = function () {
   tilt = !tilt; this.classList.toggle('on', tilt);
@@ -306,7 +360,7 @@ async function weather() {
     const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=19.05&longitude=72.95&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=Asia%2FKolkata');
     const c = (await r.json()).current;
     const code = c.weather_code;
-    const icon = code === 0 ? (night ? '🌙' : '☀️') : code <= 3 ? '⛅' : code <= 48 ? '🌫️' : code <= 67 ? '🌧️' : code <= 82 ? '🌧️' : '⛈️';
+    const icon = code === 0 ? (night ? '🌙' : '☀️') : code <= 3 ? '⛅' : code <= 48 ? '🌫️' : code <= 82 ? '🌧️' : '⛈️';
     document.getElementById('wxt').textContent = `${icon} ${Math.round(c.temperature_2m)}°C`;
     document.getElementById('wxd').innerHTML = `${WX[code] || 'weather'}<br>humidity ${c.relative_humidity_2m}% · wind ${Math.round(c.wind_speed_10m)} km/h`;
   } catch (_) { document.getElementById('wxd').textContent = 'weather unavailable'; }
@@ -332,7 +386,7 @@ q.oninput = () => {
           results.style.display = 'none'; q.blur();
           const ll = [+it.lon, +it.lat];
           map.getSource('pin').setData({ type: 'Feature', geometry: { type: 'Point', coordinates: ll } });
-          map.flyTo({ center: ll, zoom: 15.2, pitch: tilt ? 58 : 0, duration: 1400 });
+          map.flyTo({ center: ll, zoom: 15.4, pitch: tilt ? 58 : 0, duration: 1400 });
         };
         results.appendChild(d);
       });
@@ -350,7 +404,7 @@ document.getElementById('me').onclick = () => {
   navigator.geolocation?.getCurrentPosition((p) => {
     const ll = [p.coords.longitude, p.coords.latitude];
     map.getSource('pin').setData({ type: 'Feature', geometry: { type: 'Point', coordinates: ll } });
-    map.flyTo({ center: ll, zoom: 15, duration: 1200 });
+    map.flyTo({ center: ll, zoom: 15.2, duration: 1200 });
   }, () => {}, { enableHighAccuracy: true, timeout: 8000 });
 };
 </script>
